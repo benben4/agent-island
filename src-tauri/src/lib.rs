@@ -98,8 +98,8 @@ fn island_jump_to_session(source: String, session_id: String, repo_path: Option<
     }
     if let Some(repo_path) = repo_path.as_ref() {
         if Path::new(repo_path).exists() {
-            let command = resume_command(&source, &session_id);
-            return launch_terminal_command(command, Some(repo_path.clone()));
+            let (program, args) = resume_command(&source, &session_id);
+            return launch_terminal_command(&program, &args, Some(repo_path.clone()));
         }
     }
     let sessions_root = if source == "opencode" {
@@ -133,7 +133,13 @@ fn island_launch_agent(state: State<IslandState>, source: String, cwd: Option<St
         socket.replace('"', "\\\""),
         normalized
     );
-    launch_terminal_command(format!("{} cd \"{}\" && {}", exports, launch_dir.replace('"', "\\\""), command), Some(launch_dir))
+    let script = format!(
+        "{} cd {} && {}",
+        exports,
+        shell_quote(&launch_dir),
+        shell_quote(command),
+    );
+    launch_terminal_shell_script(&script, Some(launch_dir))
 }
 
 #[tauri::command]
@@ -251,17 +257,26 @@ fn apply_window_mode(window: &WebviewWindow, width: f64, height: f64) -> Result<
         .map_err(|e| e.to_string())
 }
 
-fn launch_terminal_command(command: String, cwd: Option<String>) -> Result<(), String> {
+fn launch_terminal_command(program: &str, args: &[String], cwd: Option<String>) -> Result<(), String> {
+    let command = shell_command(program, args);
+    launch_terminal_shell_script(&command, cwd)
+}
+
+fn launch_terminal_shell_script(script: &str, cwd: Option<String>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         let resolved_cwd = cwd.unwrap_or_else(|| ".".to_string());
-        let script = format!(
-            "tell application \"Terminal\" to activate\ntell application \"Terminal\" to do script \"cd \\\"{}\\\" && {}\"",
-            resolved_cwd.replace('"', "\\\""),
-            command.replace('\\', "\\\\").replace('"', "\\\"")
+        let terminal_command = format!(
+            "cd {} && {}",
+            shell_quote(&resolved_cwd),
+            script,
+        );
+        let apple_script = format!(
+            "tell application \"Terminal\" to activate\ntell application \"Terminal\" to do script {}",
+            apple_script_string_literal(&terminal_command),
         );
         Command::new("osascript")
-            .args(["-e", &script])
+            .args(["-e", &apple_script])
             .spawn()
             .map_err(|e| e.to_string())?;
         return Ok(());
@@ -270,9 +285,9 @@ fn launch_terminal_command(command: String, cwd: Option<String>) -> Result<(), S
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let launch_cmd = if let Some(cwd) = cwd {
-            format!("cd \"{}\" && {}", cwd.replace('"', "\\\""), command)
+            format!("cd {} && {}", shell_quote(&cwd), script)
         } else {
-            command
+            script.to_string()
         };
         Command::new("x-terminal-emulator")
             .args(["-e", "sh", "-lc", &launch_cmd])
@@ -283,8 +298,13 @@ fn launch_terminal_command(command: String, cwd: Option<String>) -> Result<(), S
 
     #[cfg(target_os = "windows")]
     {
+        let launch_cmd = if let Some(cwd) = cwd {
+            format!("cd /d {} && {}", cmd_quote(&cwd), script)
+        } else {
+            script.to_string()
+        };
         Command::new("cmd")
-            .args(["/C", "start", "cmd", "/K", &command])
+            .args(["/C", "start", "cmd", "/K", &launch_cmd])
             .spawn()
             .map_err(|e| e.to_string())?;
         return Ok(());
@@ -294,12 +314,51 @@ fn launch_terminal_command(command: String, cwd: Option<String>) -> Result<(), S
     Err("Unsupported platform".to_string())
 }
 
-fn resume_command(source: &str, session_id: &str) -> String {
+fn resume_command(source: &str, session_id: &str) -> (String, Vec<String>) {
     match source {
-        "opencode" => format!("opencode resume {}", session_id),
-        "claude" => format!("claude --resume {}", session_id),
-        _ => format!("codex resume {}", session_id),
+        "opencode" => ("opencode".to_string(), vec!["resume".to_string(), session_id.to_string()]),
+        "claude" => ("claude".to_string(), vec!["--resume".to_string(), session_id.to_string()]),
+        _ => ("codex".to_string(), vec!["resume".to_string(), session_id.to_string()]),
     }
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    let escaped = value.replace('\'', "'\"'\"'");
+    format!("'{}'", escaped)
+}
+
+#[cfg(windows)]
+fn shell_command(program: &str, args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(args.len() + 1);
+    parts.push(cmd_quote(program));
+    for arg in args {
+        parts.push(cmd_quote(arg));
+    }
+    parts.join(" ")
+}
+
+#[cfg(not(windows))]
+fn shell_command(program: &str, args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(args.len() + 1);
+    parts.push(shell_quote(program));
+    for arg in args {
+        parts.push(shell_quote(arg));
+    }
+    parts.join(" ")
+}
+
+fn apple_script_string_literal(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{}\"", escaped)
+}
+
+#[cfg(windows)]
+fn cmd_quote(value: &str) -> String {
+    let escaped = value.replace('"', "\"\"");
+    format!("\"{}\"", escaped)
 }
 
 fn agent_island_dir() -> PathBuf {
