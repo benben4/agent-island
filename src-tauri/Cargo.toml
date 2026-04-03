@@ -1,0 +1,21 @@
+[package]
+name = "agent-island"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "agent_island_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.2", features = [] }
+
+[dependencies]
+agent_monitor_core = { path = "../crates/agent_monitor_core" }
+arboard = "3.4"
+dirs = "6.0"
+opener = "0.7"
+rfd = "0.15"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.8.2", features = ["macos-private-api"] }
